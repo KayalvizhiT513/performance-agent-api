@@ -1,35 +1,23 @@
-import requests
-from app.config import GROQ_API_KEY
+import os
+from groq import Groq
 
-GROQ_MODEL = "openai/gpt-oss-20b"  # Example model
+# Initialize the Groq client once
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-def call_groq(prompt: str, system_prompt: str = None):
+def call_groq(prompt: str, system_prompt: str = None) -> str:
     """
-    Correct Groq API call using /openai/v1/responses.
+    Calls Groq LLM (chat.completions) and returns the model output.
     """
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    messages = []
 
-    # ✅ Groq expects plain string input, not chat messages
-    full_prompt = f"{system_prompt or 'You are a finance analytics assistant.'}\nUser: {prompt}"
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
 
-    payload = {
-        "model": "openai/gpt-oss-20b",
-        "input": full_prompt
-    }
+    messages.append({"role": "user", "content": prompt})
 
-    response = requests.post(
-        "https://api.groq.com/openai/v1/responses",
-        json=payload,
-        headers=headers,
-        timeout=15
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages
     )
 
-    if not response.ok:
-        print("Groq error:", response.status_code, response.text)
-        response.raise_for_status()
-
-    data = response.json()
-    return data.get("output_text", "")
+    return response.choices[0].message.content

@@ -1,7 +1,7 @@
 import requests
 from app.config import GROQ_API_KEY
 
-GROQ_MODEL = "mixtral-8x7b"  # Example model
+GROQ_MODEL = "openai/gpt-oss-20b"  # Example model
 
 def call_groq(prompt: str, system_prompt: str = None) -> str:
     """
@@ -21,6 +21,6 @@ def call_groq(prompt: str, system_prompt: str = None) -> str:
         "temperature": 0.2
     }
 
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
+    response = requests.post("https://api.groq.com/openai/v1/responses", json=payload, headers=headers)
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]

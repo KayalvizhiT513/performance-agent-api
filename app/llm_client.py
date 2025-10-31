@@ -21,6 +21,6 @@ def call_groq(prompt: str, system_prompt: str = None) -> str:
         "temperature": 0.2
     }
 
-    response = requests.post("https://api.groq.com/v1/chat/completions", json=payload, headers=headers)
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]

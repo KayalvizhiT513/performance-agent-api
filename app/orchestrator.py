@@ -1,6 +1,8 @@
 import requests
 from app.config import DATA_API_URL, FORMULA_API_URL
 from app.llm_client import call_groq
+import json
+import re
 
 def orchestrate_query(user_query: str):
     """
@@ -21,12 +23,17 @@ def orchestrate_query(user_query: str):
       "period": "<e.g. 5Y, 1Y>"
     }"""
 
-    parsed = call_groq(user_query, system_prompt)
-
+    raw_output = call_groq(user_query, system_prompt)
+    
+    # Clean markdown code fences if present
+    cleaned_output = re.sub(r"^```json|```$", "", raw_output.strip(), flags=re.MULTILINE).strip()
+    
     try:
-        intent_data = eval(parsed) if isinstance(parsed, str) else parsed
-    except Exception:
-        return {"error": "Could not parse LLM response.", "raw": parsed}
+        intent_data = json.loads(cleaned_output)
+    except json.JSONDecodeError:
+        print("⚠️ Could not parse JSON. Raw output:\n", raw_output)
+        return {"error": "Could not parse LLM response.", "raw": raw_output}
+
 
     intent = intent_data.get("intent")
 

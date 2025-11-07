@@ -9,21 +9,68 @@
         .chat-messages {
             max-height: 500px;
             overflow-y: auto;
+            scroll-behavior: smooth;
+            background-image:
+                linear-gradient(45deg, rgba(34, 197, 94, 0.1) 25%, transparent 25%),
+                linear-gradient(-45deg, rgba(34, 197, 94, 0.1) 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, rgba(34, 197, 94, 0.1) 75%),
+                linear-gradient(-45deg, transparent 75%, rgba(34, 197, 94, 0.1) 75%),
+                linear-gradient(90deg, rgba(59, 130, 246, 0.05) 1px, transparent 1px);
+            background-size: 20px 20px, 20px 20px, 20px 20px, 20px 20px, 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px, 0 0;
         }
         .message {
             margin-bottom: 1rem;
-            padding: 0.5rem 1rem;
-            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            border-radius: 1rem;
             max-width: 70%;
+            animation: fadeIn 0.5s ease-in;
+            word-wrap: break-word;
         }
         .user-message {
-            background-color: #3b82f6;
-            color: white;
+            background: linear-gradient(135deg, #AED6F1, #D6EAF8);
+            color: #2c3e50;
             margin-left: auto;
+            box-shadow: 0 2px 8px rgba(174, 214, 241, 0.3);
+            border: 1px solid rgba(174, 214, 241, 0.5);
         }
         .bot-message {
-            background-color: #f3f4f6;
-            color: black;
+            background: linear-gradient(135deg, #FFB6C1, #FFC0CB);
+            color: #2c3e50;
+            box-shadow: 0 2px 8px rgba(255, 182, 193, 0.3);
+        }
+        .suggestions {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+            margin-top: 0.5rem;
+        }
+        .suggestions ul {
+            list-style: none;
+            padding: 0;
+        }
+        .suggestions li {
+            padding: 0.25rem 0;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .suggestions li:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 0.25rem;
+        }
+        .json-output {
+            background: #1f2937;
+            color: #10b981;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            margin-top: 0.5rem;
+            overflow-x: auto;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
@@ -64,12 +111,64 @@
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
             messageDiv.setAttribute('data-role', isUser ? 'user' : 'assistant');
-            messageDiv.textContent = content;
+
+            // Format content: handle suggestions and JSON
+            const formattedContent = formatMessageContent(content);
+            messageDiv.innerHTML = formattedContent;
+
             messagesDiv.appendChild(messageDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            // Auto-scroll to bottom
+            setTimeout(() => {
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }, 100);
 
             // Add to history
             conversationHistory.push({ role: isUser ? 'user' : 'assistant', content: content });
+        }
+
+        function formatMessageContent(content) {
+            // Check for JSON in content
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                try {
+                    const jsonObj = JSON.parse(jsonMatch[0]);
+                    const prettyJson = JSON.stringify(jsonObj, null, 2);
+                    content = content.replace(jsonMatch[0], `<div class="json-output">${prettyJson}</div>`);
+                } catch (e) {
+                    // Not valid JSON, leave as is
+                }
+            }
+
+            // Check for suggestions (lines starting with •)
+            if (content.includes('Did you mean:') || content.includes('Closest matches:')) {
+                const lines = content.split('\n');
+                let formatted = '';
+                let inSuggestions = false;
+                for (let line of lines) {
+                    if (line.includes('Did you mean:') || line.includes('Closest matches:')) {
+                        formatted += line + '<div class="suggestions"><ul>';
+                        inSuggestions = true;
+                    } else if (inSuggestions && line.startsWith('• ')) {
+                        const suggestion = line.substring(2);
+                        formatted += `<li onclick="selectSuggestion('${suggestion}')">${suggestion}</li>`;
+                    } else if (inSuggestions) {
+                        formatted += '</ul></div>' + line;
+                        inSuggestions = false;
+                    } else {
+                        formatted += line + '<br>';
+                    }
+                }
+                if (inSuggestions) formatted += '</ul></div>';
+                return formatted;
+            }
+
+            return content.replace(/\n/g, '<br>');
+        }
+
+        function selectSuggestion(suggestion) {
+            document.getElementById('user-input').value = suggestion;
+            document.querySelector('button').click();
         }
 
         function sendMessage() {
@@ -80,6 +179,12 @@
 
             addMessage(message, true);
             input.value = '';
+
+            // Auto-scroll after user message
+            setTimeout(() => {
+                const messagesDiv = document.getElementById('chat-messages');
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }, 100);
 
             // Show typing indicator
             const typingDiv = document.createElement('div');
@@ -126,9 +231,42 @@
             }
         }
 
-        // Focus input on load
-        document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('user-input').focus();
+        // Build API specs on page load and pause chat until ready
+        document.addEventListener('DOMContentLoaded', async () => {
+            const input = document.getElementById('user-input');
+            const button = document.querySelector('button');
+            const messages = document.getElementById('chat-messages');
+
+            // Disable input and show loading
+            input.disabled = true;
+            button.disabled = true;
+            input.placeholder = 'Building API specs...';
+
+            const loadingMsg = document.createElement('div');
+            loadingMsg.className = 'bot-message message';
+            loadingMsg.textContent = '🔧 Updating API specifications... Please wait.';
+            messages.appendChild(loadingMsg);
+
+            try {
+                const response = await fetch('/build-specs', { method: 'POST' });
+                if (response.ok) {
+                    console.log('API specs built successfully');
+                    loadingMsg.textContent = '✅ API specs updated! Ready to chat.';
+                } else {
+                    throw new Error('Build failed');
+                }
+            } catch (error) {
+                console.error('Failed to build specs:', error);
+                loadingMsg.textContent = '❌ Failed to update specs. You can still try queries.';
+            }
+
+            // Enable input after delay for UX
+            setTimeout(() => {
+                input.disabled = false;
+                button.disabled = false;
+                input.placeholder = 'Ask about investment analytics...';
+                input.focus();
+            }, 1000);
         });
     </script>
 </body>

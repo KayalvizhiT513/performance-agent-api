@@ -5,3 +5,5 @@ python-dotenv
 openai
 faiss-cpu
 sentence-transformers
+selenium
+pymongo

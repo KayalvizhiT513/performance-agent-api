@@ -1,11 +1,17 @@
 from fastapi import APIRouter
 from app.models import QueryRequest
 from app.orchestrator import orchestrate_query, ConversationState
+from app.build_api_specs import build_api_specs
 
 router = APIRouter()
 
 # 🧠 In-memory conversation store
 sessions = {}
+
+@router.post("/build-specs")
+def build_specs():
+    build_api_specs()
+    return {"message": "API specs built successfully"}
 
 @router.post("/query")
 def process_query(request: QueryRequest):

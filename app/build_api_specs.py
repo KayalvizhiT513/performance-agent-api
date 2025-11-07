@@ -33,6 +33,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 
 from app.llm_client import call_groq  # <- must work in your environment
+from pymongo import MongoClient
+from app.config import MONGO_URL
 
 
 # ==============================================
@@ -153,16 +155,31 @@ def extract_apis_from_docs(route_text_map: dict) -> dict:
 # ==============================================
 #  Main entrypoint
 # ==============================================
+def save_specs_to_mongo(apis):
+    collection = get_mongo_collection()
+    if collection is not None:
+        collection.update_one(
+            {"type": "specs"},
+            {"$set": {"apis": apis}},
+            upsert=True
+        )
 
+def get_mongo_collection():
+    try:
+        client = MongoClient(MONGO_URL)
+        db = client["finperf"]
+        return db["api_specs"]
+    except Exception as e:
+        print(f"MongoDB connection failed: {e}")
+        return None
+        
 def build_api_specs():
     route_text_map = scrape_all_routes()
     specs = extract_apis_from_docs(route_text_map)
 
-    output_path = os.path.join(os.path.dirname(__file__), "finperf_api_specs.json")
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(specs, f, indent=2, ensure_ascii=False)
+    save_specs_to_mongo(specs["apis"])
 
-    print(f"\n✅ Successfully wrote {len(specs['apis'])} APIs to {output_path}")
+    print(f"Successfully built API specs with {len(specs['apis'])} endpoints.")
 
 
 if __name__ == "__main__":

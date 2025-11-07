@@ -2,7 +2,7 @@ import requests
 from app.config import OPENAI_API_KEY
 from openai import OpenAI
 
-OPENAI_MODEL = "gpt-4o"
+OPENAI_MODEL = "gpt-5"
 
 def call_groq(prompt: str, system_prompt: str = None) -> str:
     """

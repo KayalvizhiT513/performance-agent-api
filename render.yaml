@@ -3,7 +3,28 @@ services:
     name: agent-api
     env: python
     region: oregon
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      apt-get update && apt-get install -y wget gnupg &&
+      wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - &&
+      sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' &&
+      apt-get update && apt-get install -y google-chrome-stable &&
+      pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
     plan: free
     autoDeploy: true
+    disk:
+      name: agent-api-disk
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: MONGO_URL
+        fromService:
+          type: mongodb
+          name: agent-api-db
+          property: connectionString
+
+databases:
+  - type: mongodb
+    name: agent-api-db
+    databaseName: finperf
+    user: finperf_user

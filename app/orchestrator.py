@@ -15,24 +15,54 @@ Dependencies:
 
 import json
 import re
+import os
 from typing import Any, Dict, Optional
 import requests
 from app.llm_client import call_groq
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from urllib.parse import urljoin
+import time
+from app.rag_helper import rag_index
+from app.rag_helper import initialize_rag_from_docs
+from pymongo import MongoClient
+from app.config import MONGO_URL
+
+# Global storage for API specs
+global_apis_info = []
+global_validation_rules = {}
+specs_ready = False
+
+def get_mongo_collection():
+    try:
+        client = MongoClient(MONGO_URL)
+        db = client["finperf"]
+        return db["api_specs"]
+    except Exception as e:
+        print(f"MongoDB connection failed: {e}")
+        return None
+
+def load_specs_from_mongo():
+    collection = get_mongo_collection()
+    if collection is not None:
+        doc = collection.find_one({"type": "specs"})
+        if doc:
+            return doc.get("apis", []), doc.get("validation_rules", {})
+    return [], {}
 
 # ==============================
 # State and Configuration
 # ==============================
 
 class ConversationState:
-    def __init__(self, api_specs_path: str = "app/finperf_api_specs.json"):
-        self.api_specs = self._load_api_specs(api_specs_path)
+    def __init__(self):
+        # Load latest specs from MongoDB
+        apis, rules = load_specs_from_mongo()
+        self.api_specs = {"apis": apis, "validation_rules": rules}
         self.current_endpoint: Optional[Dict[str, Any]] = None
         self.params: Dict[str, Any] = {}
         self.history = []
-
-    def _load_api_specs(self, path: str) -> Dict[str, Any]:
-        with open(path, "r") as f:
-            return json.load(f)
 
 
 # ==============================
@@ -101,52 +131,54 @@ import json
 
 def validate_parameters_with_llm(params: dict, endpoint: dict) -> dict:
     """
-    Validates parameters using LLM + endpoint validation_rules.
-    Returns dict of {param_name: error_message} for invalid ones.
+    Validates parameters using the endpoint's validation_rules.
+    Returns dict of {param_name: reason} for invalid ones.
     """
     validation_rules = endpoint.get("validation_rules", {})
     if not validation_rules:
         return {}
 
-    results = {}
+    rules_text = "\n".join([f"- {p}: {r}" for p, r in validation_rules.items()])
+    params_text = json.dumps(params, indent=2)
 
-    for param, rule in validation_rules.items():
-        if param not in params:
-            continue  # skip missing ones; handled by missing check
+    prompt = f"""
+    You are a strict API validation agent.
+    Check each parameter's value against its validation rule.
 
-        value = params[param]
+    === RULES ===
+    {rules_text}
 
-        validation_prompt = f"""
-        You are a validation agent. Check if the following parameter value obeys its rule.
-        You don't to check if there are in database, just the format/content.
+    === PARAMETERS ===
+    {params_text}
 
-        Parameter name: {param}
-        Value: {value}
-        Rule: {rule}
+    If any rule is violated, describe why.
 
-        If it violates the rule, explain briefly why.
-        Otherwise say "valid".
+    Respond in valid JSON:
+    {{
+      "validation_errors": {{
+        "param_name": "reason for violation",
+        ...
+      }}
+    }}
+    """
 
-        Respond ONLY in valid JSON:
-        {{
-          "param": "{param}",
-          "valid": true or false,
-          "reason": "why invalid if applicable"
-        }}
-        """
+    try:
+        llm_output = call_groq("", prompt).strip()
+        llm_output = re.sub(r"^```(?:json)?|```$", "", llm_output).strip()
+        parsed = json.loads(llm_output)
 
-        try:
-            result = call_groq("", validation_prompt)
-            result = result.strip().replace("```json", "").replace("```", "")
-            parsed = json.loads(result)
+        if not isinstance(parsed, dict):
+            return {}
 
-            if not parsed.get("valid", True):
-                results[param] = parsed.get("reason", "Invalid value.")
-        except Exception as e:
-            results[param] = f"Validation failed: {e}"
+        errors = parsed.get("validation_errors", {})
+        if isinstance(errors, dict):
+            return errors
+        return {}
 
-    return results
-
+    except Exception as e:
+        print(f"⚠️ LLM validation failed: {e}")
+        return {}
+        
 def _is_before(date1: str, date2: str) -> bool:
     from datetime import datetime
     try:
@@ -166,13 +198,60 @@ def find_missing_params(params: Dict[str, Any], endpoint: Dict[str, Any]) -> lis
 # API Execution
 # ==============================
 
+def check_name_in_db(name: str, name_type: str) -> Dict[str, Any]:
+    """
+    Fetch all names from DATA_API/{name_type}, give to LLM to find match.
+    Returns {"exists": bool, "matched": str or None, "closest": [list]}
+    """
+    from app.config import DATA_API_URL
+    url = f"{DATA_API_URL}/{name_type}"
+    try:
+        # Fetch all records
+        resp = requests.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        all_names = [item[f"{name_type[:-1]}_name"] for item in data if f"{name_type[:-1]}_name" in item]
+
+        if not all_names:
+            return {"exists": False, "matched": None, "closest": []}
+
+        # Use LLM to find match
+        match_prompt = f"""
+        User provided name: "{name}"
+        Available {name_type} names: {', '.join(all_names)}
+
+        Determine:
+        - Exact match: If there's an exact match (case-insensitive), return it.
+        - Closest matches: Up to 3 closest similar names.
+        - If no match, say "none".
+
+        Output JSON:
+        {{
+          "matched": "exact_name" or null,
+          "closest": ["name1", "name2", "name3"] or []
+        }}
+        """
+        llm_response = call_groq("", match_prompt)
+        parsed = json.loads(llm_response) if isinstance(llm_response, str) else llm_response
+
+        matched = parsed.get("matched")
+        closest = parsed.get("closest", [])
+
+        if matched:
+            return {"exists": True, "matched": matched, "closest": []}
+        else:
+            return {"exists": False, "matched": None, "closest": closest}
+
+    except Exception as e:
+        return {"error": str(e)}
+
 def call_api(endpoint: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Execute the API call based on endpoint definition.
     """
     base_url = endpoint.get("base_url", "http://localhost:8002")
     route = endpoint.get("route")
-    method = endpoint.get("method", "POST").upper()
+    method = endpoint.get("method", "GET").upper()
 
     url = f"{base_url}{route}"
 
@@ -186,21 +265,24 @@ def call_api(endpoint: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]
     except Exception as e:
         return {"error": str(e)}
 
-def merge_user_fix_into_state(user_input, state):
+def merge_user_fix_into_state(user_input, state, endpoint):
+    expected_params = {p["name"] for p in endpoint.get("parameters", [])}
     matches = re.findall(r"(\w+)\s*=\s*([\w\-]+)", user_input)
     if matches:
         for k, v in matches:
-            state.params[k] = v
+            if k in expected_params:
+                state.params[k] = v
     else:
         # handle natural language, e.g. “start date is ...”
         correction_prompt = f"""
         Extract parameter name and value from: "{user_input}"
+        Known parameters: {', '.join(expected_params)}
         Output JSON: {{"param": "name", "value": "..."}} or null.
         """
         extraction = call_groq("", correction_prompt)
         try:
             parsed = json.loads(extraction)
-            if parsed and isinstance(parsed, dict):
+            if parsed and isinstance(parsed, dict) and parsed.get("param") in expected_params:
                 state.params[parsed["param"]] = parsed["value"]
         except Exception:
             pass
@@ -218,8 +300,9 @@ def orchestrate_query(user_query: str, state: ConversationState):
     - Call the API
     """
     print(f"State before query: {state.params}")
-    merge_user_fix_into_state(user_query, state)
     state.history.append({"role": "user", "content": user_query})
+
+    # Specs should be built on page refresh, not per query
 
     # Identify API endpoint
     endpoint = match_endpoint(user_query, state.api_specs)
@@ -237,6 +320,13 @@ def orchestrate_query(user_query: str, state: ConversationState):
     extracted = extract_parameters_with_llm(user_query, endpoint)
     state.params.update(extracted)
 
+    # Merge user corrections (only for known params)
+    merge_user_fix_into_state(user_query, state, endpoint)
+
+    # Filter to only include params defined in the endpoint schema
+    expected_params = {p["name"] for p in endpoint.get("parameters", [])}
+    state.params = {k: v for k, v in state.params.items() if k in expected_params}
+
     # Validate parameters
     validation_errors = validate_parameters_with_llm(state.params, endpoint)
     if validation_errors:
@@ -244,6 +334,31 @@ def orchestrate_query(user_query: str, state: ConversationState):
         msg = f"Some parameters are invalid:\n{error_lines}\nPlease correct them."
         state.history.append({"role": "assistant", "content": msg})
         return msg
+
+    # Check name existence in database (portfolio or benchmark)
+    for param_name in ["portfolio_name", "benchmark_name"]:
+        if param_name in state.params:
+            name_type = param_name.split("_")[0] + "s"  # portfolio or benchmark
+            name_check = check_name_in_db(state.params[param_name], name_type)
+            if name_check.get("error"):
+                msg = f"❌ Error checking {name_type}: {name_check['error']}"
+                state.history.append({"role": "assistant", "content": msg})
+                return msg
+            elif name_check.get("exists"):
+                # Update to matched name if different
+                matched = name_check.get("matched")
+                if matched and matched != state.params[param_name]:
+                    state.params[param_name] = matched
+            else:
+                closest = name_check.get("closest", [])
+                display_name = name_type.capitalize()
+                if closest:
+                    suggestion_text = "\n".join(f"• {s}" for s in closest)
+                    msg = f"{display_name} '{state.params[param_name]}' not found. Closest matches:\n{suggestion_text}\nPlease confirm or provide the correct name."
+                else:
+                    msg = f"{display_name} '{state.params[param_name]}' not found in database."
+                state.history.append({"role": "assistant", "content": msg})
+                return msg
 
     # Check for missing parameters
     missing = find_missing_params(state.params, endpoint)

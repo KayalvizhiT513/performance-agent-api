@@ -200,17 +200,25 @@ def find_missing_params(params: Dict[str, Any], endpoint: Dict[str, Any]) -> lis
 
 def check_name_in_db(name: str, name_type: str) -> Dict[str, Any]:
     """
-    Fetch all names from DATA_API/{name_type}, give to LLM to find match.
+    Load all names from MongoDB, give to LLM to find match.
     Returns {"exists": bool, "matched": str or None, "closest": [list]}
     """
-    from app.config import DATA_API_URL
-    url = f"{DATA_API_URL}/{name_type}"
     try:
-        # Fetch all records
-        resp = requests.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-        all_names = [item[f"{name_type[:-1]}_name"] for item in data if f"{name_type[:-1]}_name" in item]
+        # Load names from MongoDB
+        collection = get_mongo_collection()
+        if collection is not None:
+            doc = collection.find_one({"type": "specs"})
+            if doc:
+                if name_type == "portfolio":
+                    all_names = doc.get("portfolio_names", [])
+                elif name_type == "benchmark":
+                    all_names = doc.get("benchmark_names", [])
+                else:
+                    all_names = []
+            else:
+                all_names = []
+        else:
+            return {"error": "MongoDB connection failed"}
 
         if not all_names:
             return {"exists": False, "matched": None, "closest": []}
@@ -223,7 +231,7 @@ def check_name_in_db(name: str, name_type: str) -> Dict[str, Any]:
         Determine:
         - Exact match: If there's an exact match (case-insensitive), return it.
         - Closest matches: Up to 3 closest similar names.
-        - If no match, say "none".
+        - If no match, return empty.
 
         Output JSON:
         {{

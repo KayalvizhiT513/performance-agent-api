@@ -177,9 +177,38 @@ def build_api_specs():
     route_text_map = scrape_all_routes()
     specs = extract_apis_from_docs(route_text_map)
 
-    save_specs_to_mongo(specs["apis"])
+    # Fetch all names from data APIs
+    from app.config import DATA_API_URL
+    import requests
+    portfolio_names = []
+    benchmark_names = []
+    try:
+        resp = requests.get(f"{DATA_API_URL}/portfolios")
+        if resp.status_code == 200:
+            portfolio_names = resp.json().get("names", [])
+    except Exception as e:
+        print(f"Failed to fetch portfolio names: {e}")
+    try:
+        resp = requests.get(f"{DATA_API_URL}/benchmarks")
+        if resp.status_code == 200:
+            benchmark_names = resp.json().get("names", [])
+    except Exception as e:
+        print(f"Failed to fetch benchmark names: {e}")
 
-    print(f"Successfully built API specs with {len(specs['apis'])} endpoints.")
+    # Save everything to Mongo
+    collection = get_mongo_collection()
+    if collection is not None:
+        collection.update_one(
+            {"type": "specs"},
+            {"$set": {
+                "apis": specs["apis"],
+                "portfolio_names": portfolio_names,
+                "benchmark_names": benchmark_names
+            }},
+            upsert=True
+        )
+
+    print(f"Successfully built API specs with {len(specs['apis'])} endpoints, {len(portfolio_names)} portfolios, {len(benchmark_names)} benchmarks.")
 
 
 if __name__ == "__main__":

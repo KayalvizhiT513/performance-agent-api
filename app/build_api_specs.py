@@ -185,13 +185,13 @@ def build_api_specs():
     try:
         resp = requests.get(f"{DATA_API_URL}/portfolios")
         if resp.status_code == 200:
-            portfolio_names = resp.json().get("names", [])
+            portfolio_names = [p["portfolio_name"] for p in resp.json()]
     except Exception as e:
         print(f"Failed to fetch portfolio names: {e}")
     try:
         resp = requests.get(f"{DATA_API_URL}/benchmarks")
         if resp.status_code == 200:
-            benchmark_names = resp.json().get("names", [])
+            benchmark_names = [b["benchmark_name"] for b in resp.json()]
     except Exception as e:
         print(f"Failed to fetch benchmark names: {e}")
 

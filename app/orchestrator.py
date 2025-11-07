@@ -346,7 +346,7 @@ def orchestrate_query(user_query: str, state: ConversationState):
     # Check name existence in database (portfolio or benchmark)
     for param_name in ["portfolio_name", "benchmark_name"]:
         if param_name in state.params:
-            name_type = param_name.split("_")[0] + "s"  # portfolio or benchmark
+            name_type = param_name.split("_")[0]  # portfolio or benchmark
             name_check = check_name_in_db(state.params[param_name], name_type)
             if name_check.get("error"):
                 msg = f"❌ Error checking {name_type}: {name_check['error']}"

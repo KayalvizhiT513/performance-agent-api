@@ -249,7 +249,7 @@ def call_api(endpoint: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]
     """
     Execute the API call based on endpoint definition.
     """
-    base_url = endpoint.get("base_url", "http://localhost:8002")
+    base_url = endpoint.get("base_url", "https://performance-analytics-api.onrender.com")
     route = endpoint.get("route")
     method = endpoint.get("method", "GET").upper()
 

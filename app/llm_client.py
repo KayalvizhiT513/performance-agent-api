@@ -1,23 +1,25 @@
 import requests
-from app.config import GROQ_API_KEY
-from groq import Groq
+from app.config import OPENAI_API_KEY
+from openai import OpenAI
 
-GROQ_MODEL = "openai/gpt-oss-20b"  
+OPENAI_MODEL = "gpt-4o"
 
 def call_groq(prompt: str, system_prompt: str = None) -> str:
     """
-    Sends a structured prompt to Groq API and returns text response.
+    Sends a structured prompt to OpenAI API and returns text response.
     """
 
-    client = Groq(
-        api_key=GROQ_API_KEY,
+    client = OpenAI(
+        api_key=OPENAI_API_KEY,
     )
 
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
     chat_completion = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages= [
-            {"role": "system", "content": system_prompt or "You are a finance analytics assistant."},
-            {"role": "user", "content": prompt}
-        ]
+        model=OPENAI_MODEL,
+        messages=messages
     )
     return chat_completion.choices[0].message.content

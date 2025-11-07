@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InvPerf Analytics Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .chat-messages {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .message {
+            margin-bottom: 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            max-width: 70%;
+        }
+        .user-message {
+            background-color: #3b82f6;
+            color: white;
+            margin-left: auto;
+        }
+        .bot-message {
+            background-color: #f3f4f6;
+            color: black;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center">
+    <div class="w-full max-w-2xl bg-white rounded-lg shadow-lg p-6">
+        <h1 class="text-2xl font-bold text-center mb-4">InvPerf Analytics Assistant</h1>
+        <p class="text-gray-600 text-center mb-6">Your AI-powered Investment Performance Analytics Agent</p>
+
+        <div id="chat-messages" class="chat-messages mb-4 p-4 border rounded-lg bg-gray-50">
+            <div class="bot-message message">
+                Hello! I'm InvPerf Analytics Assistant. Ask me about portfolio analytics, standard deviation, Sharpe ratios, or any investment performance metrics.
+            </div>
+        </div>
+
+        <div class="flex">
+            <input
+                type="text"
+                id="user-input"
+                placeholder="Ask about investment analytics..."
+                class="flex-1 px-4 py-2 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                onkeypress="handleKeyPress(event)"
+            >
+            <button
+                onclick="sendMessage()"
+                class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-r-lg transition duration-200"
+            >
+                Send
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8003/query'; // Adjust if running on different port
+        let conversationHistory = [];
+
+        function addMessage(content, isUser = false) {
+            const messagesDiv = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+            messageDiv.setAttribute('data-role', isUser ? 'user' : 'assistant');
+            messageDiv.textContent = content;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            // Add to history
+            conversationHistory.push({ role: isUser ? 'user' : 'assistant', content: content });
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('user-input');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            addMessage(message, true);
+            input.value = '';
+
+            // Show typing indicator
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'bot-message message';
+            typingDiv.textContent = 'Thinking...';
+            typingDiv.id = 'typing';
+            document.getElementById('chat-messages').appendChild(typingDiv);
+
+            fetch(API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ query: message, history: conversationHistory.slice(0, -1) }), // Exclude current message
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Remove typing indicator
+                const typingElement = document.getElementById('typing');
+                if (typingElement) typingElement.remove();
+
+                if (data.response) {
+                    addMessage(data.response);
+                    // Update history from response
+                    if (data.history) {
+                        conversationHistory = data.history;
+                    }
+                } else {
+                    addMessage('I received your message but couldn\'t process it properly.');
+                }
+            })
+            .catch(error => {
+                // Remove typing indicator
+                const typingElement = document.getElementById('typing');
+                if (typingElement) typingElement.remove();
+
+                addMessage(`Network error: ${error.message}`);
+            });
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        // Focus input on load
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('user-input').focus();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "apis": [
+    {
+      "name": "Standard Deviation",
+      "route": "/analytics/standard-deviation",
+      "method": "GET",
+      "description": "Calculate the statistical volatility (standard deviation) of a portfolio's returns within a specified date range.",
+      "parameters": [
+        {
+          "name": "portfolio_name",
+          "type": "string",
+          "required": true,
+          "description": "Name of the portfolio for which to calculate standard deviation."
+        },
+        {
+          "name": "start_date",
+          "type": "date",
+          "required": true,
+          "description": "Starting date of the range; must be the first day of a month."
+        },
+        {
+          "name": "end_date",
+          "type": "date",
+          "required": true,
+          "description": "Ending date of the range; must be the last day of a month."
+        }
+      ],
+      "validation_rules": {
+        "portfolio_name": "Must be alphanumeric (letters, numbers, single space, underscores only). No special characters allowed except space. Length between 3 and 50 characters. Must map to a valid, accessible portfolio record in the database.",
+        "start_date": "Must follow ISO format (YYYY-MM-DD). Must be the first day of a month. Must be earlier than end_date.",
+        "end_date": "Must follow ISO format (YYYY-MM-DD). Must be the last day of a month. Must be later than start_date."
+      },
+      "keywords": [
+        "standard deviation",
+        "volatility",
+        "portfolio",
+        "returns",
+        "date range"
+      ],
+      "source_route": "/std-dev"
+    }
+  ]
+}

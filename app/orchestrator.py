@@ -1,129 +1,264 @@
+"""
+Simplified deterministic orchestrator for FinPerf conversational API interface.
+
+Responsibilities:
+- Parse user query
+- Identify matching endpoint
+- Extract parameters (via minimal LLM use)
+- Ask user for missing or invalid parameters
+- Call the correct API and return results
+
+Dependencies:
+- llm_client.call_groq (for controlled extraction)
+- Structured JSON doc of APIs (auto-generated offline)
+"""
+
 import json
 import re
-from typing import Any, Dict
-
+from typing import Any, Dict, Optional
 import requests
-from app.config import FORMULA_API_URL
 from app.llm_client import call_groq
-from app.nl_query_runner import run_nl_query
 
-def safe_parse_llm_output(parsed):
-    if not isinstance(parsed, str):
-        return parsed
+# ==============================
+# State and Configuration
+# ==============================
 
-    # Step 1: Remove ```json or ``` wrappers
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", parsed.strip())
+class ConversationState:
+    def __init__(self, api_specs_path: str = "app/finperf_api_specs.json"):
+        self.api_specs = self._load_api_specs(api_specs_path)
+        self.current_endpoint: Optional[Dict[str, Any]] = None
+        self.params: Dict[str, Any] = {}
+        self.history = []
 
-    # Step 2: Parse JSON safely
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        return {"error": "Could not parse LLM response.", "raw": parsed}
+    def _load_api_specs(self, path: str) -> Dict[str, Any]:
+        with open(path, "r") as f:
+            return json.load(f)
 
-def orchestrate_query(user_query: str):
+
+# ==============================
+# Core Matching and Extraction
+# ==============================
+
+def match_endpoint(user_query: str, api_specs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Main orchestration logic:
-    - Parse user intent
-    - Fetch data or compute metrics
-    - Handle clarifications
+    Deterministically match the user query to the right API endpoint
+    based on known names, routes, and keywords.
+    """
+    query = user_query.lower()
+
+    for api in api_specs.get("apis", []):
+        name = api.get("name", "").lower().replace("_", " ")
+        route = api.get("route", "").lower()
+        keywords = [k.lower() for k in api.get("keywords", [])]
+
+        # Direct name or route match
+        if name in query or route in query:
+            return api
+
+        # Keyword match
+        if any(kw in query for kw in keywords):
+            return api
+
+    return None
+
+
+def extract_parameters_with_llm(user_query: str, endpoint: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Use LLM to extract parameter values from user query based on endpoint schema.
+    Deterministic prompt (temperature=0 equivalent).
+    """
+    params = endpoint.get("parameters", [])
+    if not params:
+        return {}
+
+    param_names = [p["name"] for p in params]
+    prompt = f"""
+    You are an information extraction model.
+
+    Extract the following parameters from the user's request.
+    If not mentioned, set value to null.
+
+    Required parameters: {', '.join(param_names)}
+
+    User query: "{user_query}"
+
+    Respond with valid JSON only:
+    {{
+      {', '.join([f'"{p}": "value or null"' for p in param_names])}
+    }}
     """
 
-    # 1️⃣ Ask LLM to parse the intent
-    system_prompt = """You are an investment analytics agent.
-    Parse the user's query and output a JSON object like:
-    {
-      "intent": "get_data" | "compute_metric" | "clarify",
-      "portfolio_name": "<optional>",
-      "benchmark_name": "<optional>",
-      "metric": "<optional>",
-      "period": "<e.g. 5Y, 1Y>"
-    }"""
-
-    parsed = call_groq(user_query, system_prompt)
-    print("LLM Parsed Output:", parsed)
-
+    llm_output = call_groq("", prompt)
     try:
-        intent_data = safe_parse_llm_output(parsed)
-        print("Parsed Intent Data:", intent_data)
+        parsed = json.loads(re.sub(r"^```(?:json)?|```$", "", llm_output.strip()))
+        return {k: v for k, v in parsed.items() if v and v.lower() != "null"}
     except Exception:
-        return {"error": "Could not parse LLM response.", "raw": parsed}
+        return {}
 
-    intent = intent_data.get("intent")
 
-    # 2️⃣ Route based on intent
-    if intent == "get_data":
-        return handle_get_data(intent_data, user_query)
+from app.llm_client import call_groq
+import json
 
-    elif intent == "compute_metric":
-        return handle_compute_metric(intent_data, user_query)
+def validate_parameters_with_llm(params: dict, endpoint: dict) -> dict:
+    """
+    Validates parameters using LLM + endpoint validation_rules.
+    Returns dict of {param_name: error_message} for invalid ones.
+    """
+    validation_rules = endpoint.get("validation_rules", {})
+    if not validation_rules:
+        return {}
 
-    elif intent == "clarify":
-        return {"message": "Please clarify your request.", "suggestions": ["Specify fund name or metric."]}
+    results = {}
 
+    for param, rule in validation_rules.items():
+        if param not in params:
+            continue  # skip missing ones; handled by missing check
+
+        value = params[param]
+
+        validation_prompt = f"""
+        You are a validation agent. Check if the following parameter value obeys its rule.
+        You don't to check if there are in database, just the format/content.
+
+        Parameter name: {param}
+        Value: {value}
+        Rule: {rule}
+
+        If it violates the rule, explain briefly why.
+        Otherwise say "valid".
+
+        Respond ONLY in valid JSON:
+        {{
+          "param": "{param}",
+          "valid": true or false,
+          "reason": "why invalid if applicable"
+        }}
+        """
+
+        try:
+            result = call_groq("", validation_prompt)
+            result = result.strip().replace("```json", "").replace("```", "")
+            parsed = json.loads(result)
+
+            if not parsed.get("valid", True):
+                results[param] = parsed.get("reason", "Invalid value.")
+        except Exception as e:
+            results[param] = f"Validation failed: {e}"
+
+    return results
+
+def _is_before(date1: str, date2: str) -> bool:
+    from datetime import datetime
+    try:
+        d1 = datetime.fromisoformat(date1)
+        d2 = datetime.fromisoformat(date2)
+        return d1 < d2
+    except Exception:
+        return True  # don't block if format can't be parsed
+
+
+def find_missing_params(params: Dict[str, Any], endpoint: Dict[str, Any]) -> list:
+    required = [p["name"] for p in endpoint.get("parameters", []) if p.get("required")]
+    return [r for r in required if r not in params]
+
+
+# ==============================
+# API Execution
+# ==============================
+
+def call_api(endpoint: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Execute the API call based on endpoint definition.
+    """
+    base_url = endpoint.get("base_url", "http://localhost:8002")
+    route = endpoint.get("route")
+    method = endpoint.get("method", "POST").upper()
+
+    url = f"{base_url}{route}"
+
+    try:
+        if method == "GET":
+            resp = requests.get(url, params=params)
+        else:
+            resp = requests.post(url, json=params)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+def merge_user_fix_into_state(user_input, state):
+    matches = re.findall(r"(\w+)\s*=\s*([\w\-]+)", user_input)
+    if matches:
+        for k, v in matches:
+            state.params[k] = v
     else:
-        return {"error": "Unrecognized intent", "details": intent_data}
+        # handle natural language, e.g. “start date is ...”
+        correction_prompt = f"""
+        Extract parameter name and value from: "{user_input}"
+        Output JSON: {{"param": "name", "value": "..."}} or null.
+        """
+        extraction = call_groq("", correction_prompt)
+        try:
+            parsed = json.loads(extraction)
+            if parsed and isinstance(parsed, dict):
+                state.params[parsed["param"]] = parsed["value"]
+        except Exception:
+            pass
 
+# ==============================
+# Main Orchestration Logic
+# ==============================
 
-def handle_get_data(intent_data, user_query: str):
+def orchestrate_query(user_query: str, state: ConversationState):
     """
-    Call Data API to retrieve portfolio returns
+    Main orchestration loop:
+    - Identify endpoint
+    - Extract and validate parameters
+    - Handle missing or invalid ones
+    - Call the API
     """
-    try:
-        nl_result = run_nl_query(user_query)
-        sql_text = nl_result["sql"]
-        params = nl_result.get("params")
-        rows = nl_result.get("rows", [])
-        return {
-            "intent": "get_data",
-            "sql": sql_text,
-            "params": params,
-            "row_count": len(rows),
-            "preview": rows[:5],
-        }
+    print(f"State before query: {state.params}")
+    merge_user_fix_into_state(user_query, state)
+    state.history.append({"role": "user", "content": user_query})
 
-    except Exception as e:
-        return {"error": str(e)}
+    # Identify API endpoint
+    endpoint = match_endpoint(user_query, state.api_specs)
+    if not endpoint and state.current_endpoint:
+        endpoint = state.current_endpoint
 
+    if not endpoint:
+        msg = "❓ I couldn't identify which API to call. Please rephrase your request."
+        state.history.append({"role": "assistant", "content": msg})
+        return msg
 
-def handle_compute_metric(intent_data, user_query: str):
-    """
-    Calls both Data API and Formula API to produce a computed result
-    """
-    try:
-        metric = intent_data.get("metric")
-        nl_result = run_nl_query(user_query)
-        sql_text = nl_result["sql"]
-        rows = nl_result.get("rows", [])
+    state.current_endpoint = endpoint
 
-        return_column = "return_value"
-        if rows and isinstance(rows[0], dict) and return_column not in rows[0]:
-            fallback = next((key for key in rows[0].keys() if "return" in key.lower()), None)
-            if fallback:
-                return_column = fallback
+    # Extract parameters
+    extracted = extract_parameters_with_llm(user_query, endpoint)
+    state.params.update(extracted)
 
-        daily_returns = [
-            row[return_column]
-            for row in rows
-            if isinstance(row, dict) and return_column in row and row[return_column] is not None
-        ]
+    # Validate parameters
+    validation_errors = validate_parameters_with_llm(state.params, endpoint)
+    if validation_errors:
+        error_lines = "\n".join(f"• {k}: {v}" for k, v in validation_errors.items())
+        msg = f"Some parameters are invalid:\n{error_lines}\nPlease correct them."
+        state.history.append({"role": "assistant", "content": msg})
+        return msg
 
-        formula_payload = {"metric": metric, "inputs": {"returns": daily_returns}}
-        formula_response = requests.post(f"{FORMULA_API_URL}/compute", json=formula_payload)
-        if formula_response.status_code >= 400:
-            raise RuntimeError(f"Formula API error: {formula_response.status_code} {formula_response.text}")
+    # Check for missing parameters
+    missing = find_missing_params(state.params, endpoint)
+    if missing:
+        msg = f"I still need the following parameters: {', '.join(missing)}."
+        state.history.append({"role": "assistant", "content": msg})
+        return msg
 
-        result = formula_response.json()
+    # All good → call API
+    result = call_api(endpoint, state.params)
 
-        return {
-            "intent": "compute_metric",
-            "metric": metric,
-            "sql": sql_text,
-            "row_count": len(rows),
-            "value": result.get("value"),
-            "methodology": result.get("methodology", ""),
-            "preview": rows[:5],
-            "return_column": return_column,
-        }
+    if "error" in result:
+        msg = f"❌ API call failed: {result['error']}"
+    else:
+        msg = f"✅ {endpoint['name']} result:\n{json.dumps(result, indent=2)}"
 
-    except Exception as e:
-        return {"error": str(e)}
+    state.history.append({"role": "assistant", "content": msg})
+    return msg
